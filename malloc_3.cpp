@@ -38,6 +38,19 @@ static void listInsertToTail(MallocMetadata* entry){
     entry->next = nullptr;
 }
 
+static MallocMetadata* listGetTail(){
+    if ( list_head == nullptr ){
+        return nullptr;
+    }
+
+    MallocMetadata* it = list_head;
+    while (it->next){
+        it = it->next;
+    }
+
+    return it;
+}
+
 
 /***
  * Insert an entry into the histogram.
@@ -88,6 +101,9 @@ void hist_insert( MallocMetadata* entry ){
  * @param entry: the entry.
  */
 void hist_remove( MallocMetadata* entry ){
+    if (!entry->is_free){
+        return;
+    }
     int index = entry->size / KILO;
     if ( !(entry->prev2) ) {
         hist[index] = entry->next2;
@@ -135,7 +151,7 @@ MallocMetadata* hist_search(size_t size) {
 static void splitBlock(MallocMetadata* block, size_t size) {
     assert(block);
 
-    MallocMetadata* split = (MallocMetadata*) ( ( (char*)  block + size_of_metadata + block->size) );
+    MallocMetadata* split = (MallocMetadata*) ( ( (char*)  block + size_of_metadata + size) );
     split->size = block->size - size - size_of_metadata;
 
     split->is_free = true;
@@ -151,13 +167,13 @@ static void splitBlock(MallocMetadata* block, size_t size) {
 }
 
 /************* CHALLENGE 2 *************/
-static void mergeNextBlock(MallocMetadata* block) {
+static bool mergeNextBlock(MallocMetadata* block) {
     assert(block);
     if (block->next == nullptr){
-        return;
+        return false;
     }
     if (!block->next->is_free){
-        return;
+        return false;
     }
     block->next = block->next->next;
     if(block->next){
@@ -165,6 +181,7 @@ static void mergeNextBlock(MallocMetadata* block) {
     }
 
     block->size += size_of_metadata + block->next->size;
+    return true;
 }
 
 void* smalloc(size_t size){
@@ -175,7 +192,19 @@ void* smalloc(size_t size){
        MallocMetadata* free_block = hist_search(size);
        if ( !free_block ) {
            /******** No free large enough block was found ********/
-           //TODO: Wilderness block
+
+           /******** Wilderness block *************/
+           MallocMetadata* last_block = listGetTail();
+           if ( last_block && last_block->is_free ) {
+               size_t diff = size - last_block->size;
+               void* addr = sbrk(diff);
+               if (addr == (void*) -1){
+                   return nullptr;
+               }
+               last_block->is_free = false;
+               last_block->size = size;
+               return  (((char*) last_block) + size_of_metadata);
+           }
 
            void* block_start = sbrk(size + size_of_metadata);
            if ( block_start == (void*) -1 ){
@@ -187,15 +216,44 @@ void* smalloc(size_t size){
            listInsertToTail(metadata);
            return (((char*)block_start) + size_of_metadata);
        }
+
        /***** A free block large enough was found *****/
 
-       /******** Need to split the block ***********/
        if ( (free_block->size - size) >= (size_of_metadata + 128) ){
-
+           /******** Need to split the block ***********/
+           splitBlock(free_block, size);
+           free_block->is_free = false;
+           return (((char*) free_block) + size_of_metadata);
+       } else {
+           /******** No need to split the block ***********/
+           free_block->is_free = false;
+           return  (((char*) free_block) + size_of_metadata);
        }
-
+    } else {
+        void* mmap_addr = mmap(nullptr, size + size_of_metadata, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+        if(mmap_addr == (void*)(-1)){
+            return nullptr;
+        }
+        if(mmap_list_head == nullptr){
+            mmap_list_head = (MallocMetadata*)mmap_addr;
+            mmap_list_head->is_free = false;
+            mmap_list_head->size = size;
+            mmap_list_head->next = nullptr;
+            mmap_list_head->prev = nullptr;
+            return (((char*) mmap_list_head) + size_of_metadata);
+        }
+        MallocMetadata* it = mmap_list_head;
+        while(it->next){
+            it = it->next;
+        }
+        MallocMetadata* new_block = (MallocMetadata*)mmap_addr;
+        it->next = new_block;
+        new_block->next = nullptr;
+        new_block->prev = it;
+        new_block->is_free = false;
+        new_block->size = size;
+        return (((char*) new_block) + size_of_metadata);
     }
-
 }
 
 
@@ -214,18 +272,48 @@ void* scalloc(size_t num, size_t size){
 }
 
 
-
 void sfree(void* p){
-    if(p==nullptr){
+    if (p == nullptr){
         return;
     }
-    MallocMetadata* to_free =(MallocMetadata*)((char*) p - size_of_metadata);
-    to_free->is_free=true ;
-    return;
+    MallocMetadata *metadata = (MallocMetadata *) ((char *) p - size_of_metadata);
+    if (metadata->is_free){
+        return;
+    }
+    if(metadata->size <= 128 * KILO) {
+        metadata->is_free = true;
+        if (metadata->next->is_free){
+            hist_remove(metadata->next);
+        }
+        if (metadata->prev->is_free){
+            hist_remove(metadata->prev);
+        }
+        mergeNextBlock(metadata);
+        if ( mergeNextBlock(metadata->prev) ){
+            hist_insert(metadata->prev);
+        } else{
+            hist_insert(metadata);
+        }
+    }else{
+        metadata->is_free = true;
+        MallocMetadata* next_meta = metadata->next;
+        MallocMetadata* prev_meta = metadata->prev;
+        if(metadata == mmap_list_head){
+            mmap_list_head = next_meta;
+        }
+        if(next_meta != nullptr){
+            next_meta->prev = prev_meta;
+        }
+        if(prev_meta != nullptr){
+            prev_meta->next = next_meta;
+        }
+        void* block_address = (void*)((char *) p - size_of_metadata);
+        munmap(block_address , metadata->size + size_of_metadata);
+    }
 }
 
 void* srealloc(void* oldp, size_t size){
-    if(size==0||size>100000000){
+    if(size==0 || size>100000000){
         return nullptr;
     }
 
@@ -233,19 +321,86 @@ void* srealloc(void* oldp, size_t size){
         return smalloc(size);
     }
 
-    MallocMetadata* old_metadata = (MallocMetadata*) ( ((char*) oldp) - size_of_metadata);
-    if (old_metadata->size < size) {
-        void* new_data = smalloc(size);
-        if (!new_data){
+    MallocMetadata* metadata = (MallocMetadata*) (((char*) oldp) - size_of_metadata);
+    hist_remove(metadata);
+    if (metadata->size <= KILO * 128) {
+        if (size <= metadata->size ){
+            metadata->is_free = false;
+            //return oldp;
+        }
+        else if (!(metadata->next) && metadata->size < size) { // wilderness
+            size_t diff = size - metadata->size;
+            void* addr = sbrk(diff);
+            if (addr == (void*) -1) {
+                return nullptr;
+            }
+            metadata->size = size;
+        }
+        else if((metadata->prev) && (metadata->prev->is_free) &&
+                ((metadata->prev->size + metadata->size + size_of_metadata) >= size) ){
+            hist_remove(metadata->prev);
+            metadata->prev->is_free = false;
+            metadata->prev->next = metadata->next;
+            metadata->prev->size = metadata->prev->size + size_of_metadata + metadata->size;
+            if (metadata->next){
+                metadata->next->prev = metadata->prev; //TODO: may be wrong
+            }
+            std::memmove(((char*)metadata->prev + size_of_metadata), ((char*)metadata + size_of_metadata), metadata->size);
+            metadata = metadata->prev;
+        }
+        else if ((metadata->next) && (metadata->next->is_free) &&
+                 ((metadata->next->size + metadata->size + size_of_metadata) >= size)){
+            hist_remove(metadata->next);
+            metadata->is_free = false;
+            metadata->size = metadata->next->size + metadata->size + size_of_metadata;
+            metadata->next = metadata->next->next;
+            if (metadata->next){
+                metadata->next->prev = metadata;
+            }
+        }
+        else if ((metadata->next) && (metadata->next->is_free) && (metadata->prev) && (metadata->prev->is_free)
+        && ((metadata->prev->size + size_of_metadata + metadata->size + size_of_metadata + metadata->next->size) >= size) ){
+            hist_remove(metadata->prev);
+            hist_remove(metadata->next);
+            metadata->prev->is_free = false;
+            metadata->prev->size = metadata->prev->size + size_of_metadata + metadata->size + size_of_metadata + metadata->next->size;
+            std::memmove(((char*)metadata->prev + size_of_metadata), ((char*)metadata + size_of_metadata), metadata->size);
+            metadata->prev->next = metadata->next->next;
+            if (metadata->prev->next) {
+                metadata->prev->next->prev = metadata->prev;
+            }
+            metadata = metadata->prev;
+        } else{
+            void* addr = smalloc(size);
+            if (!addr){
+                return nullptr;
+            }
+            std::memmove(addr, (char*)metadata + size_of_metadata, size);
+            sfree((char*)metadata + size_of_metadata);
+            return addr;
+        }
+
+        if (metadata->size >= size + size_of_metadata + 128){
+            splitBlock(metadata, size);
+        }
+
+        return (char *)metadata + size_of_metadata;
+    } else{
+        void* mmapp_address = smalloc(size);
+        if(mmapp_address == nullptr){
             return nullptr;
         }
-        std::memcpy(new_data, oldp, size);
+        MallocMetadata* mmap_metadata = (MallocMetadata*)((char*)mmapp_address - size_of_metadata);
+        if(size < metadata->size){
+            std::memmove(mmapp_address, (char *)metadata + size_of_metadata, size);
+        }else{
+            std::memmove(mmapp_address, (char *)metadata + size_of_metadata, metadata->size);
+        }
         sfree(oldp);
-        return new_data;
+        return (char*)mmap_metadata + size_of_metadata;
     }
-    else {
-        return oldp;
-    }
+
+
 }
 
 
