@@ -15,14 +15,14 @@ MallocMetadata* list_head = nullptr;
 size_t size_of_metadata = sizeof(MallocMetadata);
 
 void* smalloc(size_t size){
-    if(size==0||size>100000000){
-        return nullptr ;
+    if(size==0||size>=100000000) {
+        return nullptr;
     }
     if(list_head== nullptr){
         void* head= sbrk(size + size_of_metadata);
         if(head == (void *) (-1)){
-                return nullptr ;
-		}
+            return nullptr ;
+        }
         list_head = (MallocMetadata*) head;
         list_head->next = nullptr;
         list_head->prev = nullptr;
@@ -36,31 +36,29 @@ void* smalloc(size_t size){
         while (it->next){
             if(it->size>=size && it->is_free){
                 it->is_free=false;
-                it->size=size;
                 return (char*)it + size_of_metadata ;
             }
             it=it->next;
 
         }
-         if (it->size>=size && it->is_free){
+        if (it->size>=size && it->is_free){
             it->is_free=false;
-            it->size=size;
             return (char*)it + size_of_metadata ;
 
         }
-         else{
-             void* head= sbrk(size + size_of_metadata);
-             if(head == (void *) (-1)){
-                 return nullptr ;
-             }
-             it->next=(MallocMetadata*)head;
-             it->next->next= nullptr;
-             it->next->size=size;
-             it->next->is_free= false;
-             it->next->prev=it ;
-             return (char*)it->next+size_of_metadata ;
+        else{
+            void* head= sbrk(size + size_of_metadata);
+            if(head == (void *) (-1)){
+                return nullptr ;
+            }
+            it->next=(MallocMetadata*)head;
+            it->next->next= nullptr;
+            it->next->size=size;
+            it->next->is_free= false;
+            it->next->prev=it ;
+            return (char*)it->next+size_of_metadata ;
 
-         }
+        }
 
     }
 
@@ -70,10 +68,10 @@ void* smalloc(size_t size){
 
 void* scalloc(size_t num, size_t size){
     size_t size_num=num*size;
-    if(size_num==0||size_num>100000000){
+    if(size_num==0||size_num>=100000000){
         return nullptr ;
     }
-	void* address = smalloc(size_num);
+    void* address = smalloc(size_num);
     if(address== nullptr){
         return nullptr ;
     }
@@ -93,12 +91,12 @@ void sfree(void* p){
 }
 
 void* srealloc(void* oldp, size_t size){
-	if(size==0||size>100000000){
+    if(size==0||size>100000000){
         return nullptr;
     }
 
     if (oldp == nullptr) {
-    	return smalloc(size);
+        return smalloc(size);
     }
 
     MallocMetadata* old_metadata = (MallocMetadata*) ( ((char*) oldp) - size_of_metadata);
@@ -184,3 +182,4 @@ size_t _num_meta_data_bytes(){
 size_t _size_meta_data(){
     return size_of_metadata ;
 }
+
