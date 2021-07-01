@@ -336,7 +336,7 @@ void* srealloc(void* oldp, size_t size){
             }
             metadata->size = size;
         }
-        else if((metadata->prev) && (metadata->prev->is_free) &&
+        else if((metadata->prev) && (metadata->prev->is_free) && //Can combine the prev
                 ((metadata->prev->size + metadata->size + size_of_metadata) >= size) ){
             hist_remove(metadata->prev);
             metadata->prev->is_free = false;
@@ -348,7 +348,7 @@ void* srealloc(void* oldp, size_t size){
             std::memmove(((char*)metadata->prev + size_of_metadata), ((char*)metadata + size_of_metadata), metadata->size);
             metadata = metadata->prev;
         }
-        else if ((metadata->next) && (metadata->next->is_free) &&
+        else if ((metadata->next) && (metadata->next->is_free) && // Can combine the next
                  ((metadata->next->size + metadata->size + size_of_metadata) >= size)){
             hist_remove(metadata->next);
             metadata->is_free = false;
@@ -358,7 +358,7 @@ void* srealloc(void* oldp, size_t size){
                 metadata->next->prev = metadata;
             }
         }
-        else if ((metadata->next) && (metadata->next->is_free) && (metadata->prev) && (metadata->prev->is_free)
+        else if ((metadata->next) && (metadata->next->is_free) && (metadata->prev) && (metadata->prev->is_free) // Can combine both
         && ((metadata->prev->size + size_of_metadata + metadata->size + size_of_metadata + metadata->next->size) >= size) ){
             hist_remove(metadata->prev);
             hist_remove(metadata->next);
@@ -370,7 +370,7 @@ void* srealloc(void* oldp, size_t size){
                 metadata->prev->next->prev = metadata->prev;
             }
             metadata = metadata->prev;
-        } else{
+        } else{ // Need to allocate
             void* addr = smalloc(size);
             if (!addr){
                 return nullptr;
@@ -416,7 +416,15 @@ size_t _num_free_blocks(){
         }
         it=it->next;
     }
-    return  num_free ;
+    it = mmap_list_head;
+    while ( it ) {
+        if (it->is_free){
+            /******* We should not reach here, in our free function we
+             * remove munmaped blocks from the list ******/
+            assert(0);
+        }
+    }
+    return  num_free;
 }
 
 
@@ -432,6 +440,15 @@ size_t _num_free_bytes(){
         }
         it=it->next;
     }
+    it = mmap_list_head;
+    while ( it ) {
+        if (it->is_free){
+            /******* We should not reach here, in our free function we
+             * remove munmaped blocks from the list ******/
+            assert(0);
+        }
+        it = it->next;
+    }
     return num_free_bytes ;
 }
 
@@ -444,6 +461,12 @@ size_t _num_allocated_blocks(){
     while (it){
         num_alo++;
         it=it->next;
+    }
+
+    it = mmap_list_head;
+    while ( it ) {
+        num_alo++;
+        it = it->next;
     }
     return  num_alo ;
 }
@@ -458,6 +481,12 @@ size_t _num_allocated_bytes(){
     while (it){
         num_alo_bytes+=it->size;
         it=it->next;
+    }
+
+    it = mmap_list_head;
+    while ( it ) {
+        num_alo_bytes += it->size;
+        it = it->next;
     }
     return  num_alo_bytes ;
 }
